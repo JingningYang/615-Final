@@ -1,0 +1,249 @@
+---
+title: "615 Final_Powerpoint"
+author: "Jingning Yang"
+date: "12/14/2019"
+output: ioslides_presentation
+always_allow_html: yes
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(stringr)
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(RColorBrewer)
+library(dplyr)
+library(textdata)
+library(tidytext)
+library(RColorBrewer)
+library(wordcloud)
+library(wordcloud2)
+library(dplyr)
+```
+
+## Project Introduction
+
+- I use the dataset provided by Yelp as part of their Dataset Challenge 2019. The dataset includes data from 36 states in United States. It contains information about 158525 business and business attributes, 6685900 reviews and so on. Summarize, the dataset consists of five json files: business, review, user, check-in and tip. 
+
+- Since our dataset too large to run in local, I cleaned the dataset on server, separate into 3 different datasets about restaurants business, saved them and will be read in this rmd file.
+
+## Import and clean Yelp JSON Data: Business + Review 
+
+- I separated business.json into 2 csv file: business.csv and att.csv, selected useful information in review.json into one csv file: review.csv.      
+
+- And my goal is try to figure out based on stars, is there any particular standard or requirement for a "good" restaurant(stars >=4) in state OH and PA? And it may help business change their stars in short term by paying more attention on those standard/requirement in these two states. Also it may help visitors recognize variety taste of each states so that they can avoid the situation: go to restaurants with high stars, but do not like its taste at all. 
+```{r, echo=FALSE, warning=FALSE}
+review <- read.csv("review.csv")
+business <- read.csv("business.csv")
+att <- read.csv("attribute.csv")
+```
+
+## Clean imported Data
+For business file, we focus on address, postal code, city, name, stars, states, review counts, longitude and latitude, thus we delete other useless data. 
+For att file, we only focus on whole useful attributes for each restaurant in business file.
+
+If we take a look closer to our data, we can see the number of restaurants of 24 states are not stable, and for compare them in states, I will keep state OH and PA which has more than 20 restaurants record in this data.
+```{r, echo=FALSE}
+att <- att %>% select(-ByAppointmentOnly, -AcceptsInsurance, -AgesAllowed, -Corkage, -BYOB, -Open24Hours)
+```
+
+## Basic EDA
+Through this graph, we can see there is about positive correlation between review count and stars in different states.  
+```{r, echo=FALSE}
+ggplot(att) +
+  geom_point(aes(x=stars, y=reviewcount, color=state), stat = "identity",alpha=0.3) +
+  facet_grid(.~state) +scale_y_log10()
+```
+
+
+## Using PCA reduce our dimensions
+Because of there are correlation between each variables in our dataset, we try PCA here to reduce the dimension so that we can explore potential relationship between variables.      
+```{r, echo=FALSE, warning=FALSE}
+att <- select(att, -state)
+cortest.bartlett(att)
+```
+## Using PCA reduce our dimensions
+- From previous output data, Bartlett's test is highly significant, asymptotically chi-square is 35748.42, and the P-value of chi-square smaller than 0.001, therefore factor analysis is appropriate.   
+
+- Since my goal is reduce number of variables in my data by extracting important one from the data, thus, I will using PCA to do factor extraction.
+
+## Factor extraction by using PCA: {.smaller}
+```{r, echo=FALSE, message=FALSE}
+pc <- principal(att, nfactors = 22, rotate="none")
+#parallel <- fa.parallel(att, fm='minres', fa='fa', main = "Scree Plot")
+plot(pc$values, type="b", main = "Scree Plot") 
+```
+
+<font size="3">From the Scree plot,since the elbow part is about the 3rd point from the left. 
+Thus, we choose 3 as our number of factors.  </font>
+
+## Redo PCA by using 3 factors:
+```{r, echo=FALSE}
+pc2 <- principal(att, nfactors = 3, rotate="none")
+```
+
+Through output data, Cumulative variable shows these 3 principle components explains 40% data with 22 variables. Specific output table placed in Appendix slides.     
+
+## Plot result:
+For easier to explain the output of factor extraction, we can using orthogonal rotation to decreasing noice for factors as much as possible and get the plot illustrate correlationships between variables.     
+```{r, echo=FALSE}
+pc3 <- principal(att, nfactors = 3, rotate = "varimax")
+#print.psych(pc3, cut=0.3, sort = TRUE, main="table after orthogonal rotation") #cut=0.3:only loading above 0.3, otherwise correlation is not high enough, so we consider excluding them.
+fa.diagram(pc3,simple=TRUE)
+```
+
+## Plot result:
+- From previously graph, 22 variables can separated as 3 groups: RC1, RC2, RC3. RC1 including restaurants good for groups with highest factor loadings, has tv, good for kids and so on. We can consider RC1 as "Suitable for Family/group". RC2 including smoking, happy hour, coat check and so on that we may recognize RC2 as "Suitable for social/networking". RC3 including wheel chair accessible, dogs allowed and so on that can be called "Humanistic care". 
+
+- Therefore, we can summarize our variables from 3 parts: suitable for family/group, suitable for social/networking and humanistic care.
+
+
+## Explore any preference for a "good" restaurants in different states 
+Try to solve this question, we need to use review.csv based on cleaned review.json. I merge review.csv and business.csv together and use it to do text mining for exploring any preference.
+Before we do text mining, We try to figure out the top number of restaurants in every states
+
+## Explore any preference for a "good" restaurants in different states {.smaller}
+From this plot, we can see there is 1 top number of restaurants: Pizza restaurants.      
+Therefore, we can make a guess:      
+Pizza restaurants are popular in both state OH and PA   
+```{r, echo=FALSE, warning=FALSE}
+a <- business %>% filter(str_detect(categories, "Restaurant")) %>%
+ unnest(categories) %>%
+ filter(categories != "Restaurants") %>%
+ count(state, categories) %>%
+ filter(n > 10) %>%
+ group_by(state) %>%
+ top_n(1, n)
+a$categories[a$categories == "Restaurants, Pizza"] <- "Pizza, Restaurants"
+ggplot(a, aes(x=state, y=n, fill=categories)) +
+  geom_bar(stat = "identity") +
+  labs(y="Number of restaurants")
+```
+
+
+# Checking our guess by using Text mining for feature reviews of restaurants
+```{r, echo=FALSE}
+#Subset for each state:
+OH <- subset(review, stars > 4 & state == 'OH')
+PA <- subset(review, stars > 4 & state == 'PA')
+```
+
+## Review features of good restaurants in PA: {.smaller}       
+```{r, echo=FALSE}
+PAr <- PA %>% unnest_tokens(bigram, text, token = "ngrams", n = 2)
+seperate2 <- PAr %>% 
+  count(bigram, sort = TRUE) %>% 
+  separate(bigram, c("word1", "word2"), sep = " ") 
+unite2 <- seperate2 %>% 
+  filter(!word1 %in% stop_words$word) %>% #remove cases where either is a stop-word.
+  filter(!word2 %in% stop_words$word) %>% 
+  unite(bigram, word1, word2, sep = " ") %>% 
+  head(50)
+# wordcloud(unite2$bigram, unite2$n,scale = c(1.5,0.5),max.words=120,random.order = F,colors=brewer.pal(8, "Dark2"))
+wordcloud2(unite2, shape = 'circle' ,color = "random-light", size = 0.3, backgroundColor = "white")
+```
+
+## Review features of good restaurants in PA: {.smaller}   
+From the plot, the highest frequency of words are: beer selection, friendly staff, ice cream, coffee shop, friendly service,happy hour, pad thai, pork belly and so on. Looks like people in PA love Thai food.
+
+## Rreview features of good restaurants in OH: {.smaller}        
+```{r, echo=FALSE}
+OHr <- OH %>% unnest_tokens(bigram, text, token = "ngrams", n = 2)
+seperate3 <- OHr %>% 
+  count(bigram, sort = TRUE) %>% 
+  separate(bigram, c("word1", "word2"), sep = " ") 
+unite3 <- seperate3 %>% 
+  filter(!word1 %in% stop_words$word) %>% #remove cases where either is a stop-word.
+  filter(!word2 %in% stop_words$word) %>% 
+  unite(bigram, word1, word2, sep = " ") %>% 
+  head(50)
+wordcloud(unite3$bigram, unite3$n,scale = c(1.5,0.5),max.words=120,random.order = F,colors=brewer.pal(8, "Dark2"))
+#wordcloud2(unite3, shape = 'circle' ,color = "random-light", size = 0.3, backgroundColor = "white")
+```
+
+## Rreview features of good restaurants in OH: {.smaller}  
+From the plot, the highest frequency of words are: corned beef, customer service, ice cream, pad thai, happy hour, friendly staff, indian food,	fast food and so on. Looks like people in OH attention on customer service, corned beef, indian food and so on.
+
+## Review features summary 
+Same logic for rest states. And through previously analysis, we know that the top number of restaurants not represent the taste preference of people. And it shows the importance of the frequency of review word that illustrate what customers thought, feeling and focusing on. From previously text mining for 2 states, we know customers love ice cream, focus on customer service no matter which states they are coming from. 
+
+- Thus, maybe restaurants business can pay more attention on these general points, and improving more based on specific preference of different states.       
+
+## Sentiment analysis
+Performing sentiment analysis on the bigram review data of 2 states: we examine how often sentiment associated words are preced by some negative words by using AFINN lexicon, and we will get a numeric sentiment value for review words, with positive or negative numbers indicating the direction of the sentiment.    
+
+## Sentiment analysis for state PA {.smaller}
+```{r, echo=FALSE}
+Afinn <- get_sentiments("afinn")
+negation_words <- c("not", "no", "never", "without","none","bad")
+not_words <- seperate2 %>%
+   filter(word1 %in% negation_words) %>%
+  inner_join(Afinn, by = c(word2 = "word")) %>%
+  count(word1,word2, value, sort = TRUE)
+
+not_words %>%
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  head(20) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(word2, n * value, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Words preceded by \"not,no,never,without,none and bad\"") +
+  ylab("Sentiment value * number of occurrences in state PA") +
+  coord_flip()
+```
+
+## Sentiment analysis for state OH {.smaller}
+```{r, echo=FALSE}
+not_words1 <- seperate3 %>%
+   filter(word1 %in% negation_words) %>%
+  inner_join(Afinn, by = c(word2 = "word")) %>%
+  count(word1,word2, value, sort = TRUE)
+
+not_words1 %>%
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  head(20) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(word2, n * value, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Words preceded by \"not,no,never,without,none and bad\"") +
+  ylab("Sentiment value * number of occurrences in state OH") +
+  coord_flip()
+```
+
+## Sentiment analysis summary
+In general, review words in both states are more positive than negative, and that might because I only choose rating scores over 4.0. 
+
+Also, we observe that the weight of positive review words for good restaurants in PA is more than in OH. That might because people in OH have higher demanding on food than people in PA.
+
+## Another way sentiment analysis for state PA:{.smaller}
+Do the sentiment analysis to tag positive and negative words using an inner join, then find the most common positive and negative words.       
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(reshape2)
+seperate2 %>%
+  inner_join(get_sentiments("bing"), by=c(word2="word")) %>%
+  count(word1, word2, sentiment, sort = TRUE) %>%
+  acast(word2 ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("blue", "red"),
+                   max.words = 50)
+
+```
+
+## Another way sentiment analysis for state OH:     {.smaller}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+seperate3 %>%
+  inner_join(get_sentiments("bing"), by=c(word2="word")) %>%
+  count(word1, word2, sentiment, sort = TRUE) %>%
+  acast(word2 ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("blue", "red"),
+                   max.words = 50)
+```
+
+PS: results of the top freqency of review words of rest states are in Appendix part, welcome to check them if interested in.
+
+## Appendix {.smaller}
+Summary information of redo PCA:     
+```{r, echo=FALSE}
+pc2
+```
